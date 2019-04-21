@@ -34,7 +34,7 @@ CREATE TABLE "staging_events" (
     "sessionId" BIGINT,
     "song" VARCHAR(300),
     "status" VARCHAR(4),
-    "ts" TIMESTAMP,
+    "ts" BIGINT,
     "userAgent" VARCHAR(300),
     "userId" INTEGER
 );
@@ -43,15 +43,15 @@ CREATE TABLE "staging_events" (
 staging_songs_table_create = ("""
 CREATE TABLE "staging_songs" (
     "num_songs" INTEGER ,
-    "artist_id" VARCHAR(60) NOT NULL,
+    "artist_id" VARCHAR(60),
     "artist_latitude" VARCHAR(50),
     "artist_longitude" VARCHAR(50),
     "artist_location" VARCHAR(200),
     "artist_name" VARCHAR(100),
-    "song_id" VARCHAR(60) NOT NULL,
-    "title" VARCHAR(200) NOT NULL,
-    "duration" numeric(10,5) NOT NULL,
-    "year" INTEGER NOT NULL
+    "song_id" VARCHAR(60),
+    "title" VARCHAR(200),
+    "duration" numeric(10,5),
+    "year" INTEGER
 );
 """)
 
@@ -72,7 +72,7 @@ CREATE TABLE songplays
 
 user_table_create = ("""CREATE TABLE users
 (
-    user_id INTEGER PRIMARY KEY sortkey,
+    user_id INTEGER PRIMARY KEY NOT NULL sortkey,
     first_name VARCHAR,
     last_name VARCHAR,
     gender VARCHAR,
@@ -83,7 +83,7 @@ user_table_create = ("""CREATE TABLE users
 song_table_create = ("""
 CREATE TABLE songs 
 (
-    song_id VARCHAR PRIMARY KEY sortkey distkey,
+    song_id VARCHAR PRIMARY KEY NOT NULL sortkey distkey,
     title VARCHAR,
     artist_id VARCHAR,
     year INTEGER,
@@ -93,7 +93,7 @@ CREATE TABLE songs
 
 artist_table_create = ("""CREATE TABLE artists 
 (
-    artist_id VARCHAR PRIMARY KEY sortkey,
+    artist_id VARCHAR PRIMARY KEY NOT NULL sortkey,
     name VARCHAR,
     location VARCHAR, 
     lattitude VARCHAR,
@@ -103,7 +103,7 @@ artist_table_create = ("""CREATE TABLE artists
 
 time_table_create = ("""CREATE TABLE times 
 (
-    ts TIMESTAMP PRIMARY KEY sortkey,
+    starttime TIMESTAMP PRIMARY KEY NOT NULL sortkey,
     hour INTEGER,
     day INTEGER,
     week INTEGER,
@@ -117,7 +117,7 @@ time_table_create = ("""CREATE TABLE times
 
 staging_events_copy = """copy staging_events from {}
     credentials 'aws_iam_role={}'
-    format as json {} compupdate off TIMEFORMAT 'epochmillisecs' TRUNCATECOLUMNS region 'us-west-2';
+    format as json {} compupdate off  TRUNCATECOLUMNS region 'us-west-2';
 """.format(config.get('S3','LOG_DATA'), config.get('IAM_ROLE', 'ARN'), config.get('S3', 'LOG_JSONPATH'))
 
 
@@ -136,7 +136,7 @@ staging_songs_copy_row_count = "SELECT count (*) from staging_songs"
 songplay_table_insert = ("""
 INSERT INTO songplays (start_time, user_id, level, song_id, artist_id, session_id, location, user_agent)
     SELECT 
-        ts,
+        TIMESTAMP 'epoch' + ts/1000 * interval '1 second',
         userId,
         level,
         song_id,
@@ -146,21 +146,24 @@ INSERT INTO songplays (start_time, user_id, level, song_id, artist_id, session_i
         userAgent
         FROM staging_songs s JOIN staging_events e
         ON s.artist_name = e.artist 
-        AND s.title = e.song """)
+        AND s.title = e.song
+        AND e.length = s.duration
+        WHERE e.page ='NextSong' """)
                         
 
 user_table_insert = ("""INSERT INTO users
     SELECT 
-        userId,
+        DISTINCT userId,
         firstName,
         lastName,
         gender,
-        level FROM staging_events where userId is not NULL""")
+        level FROM staging_events where page != 'NextSong' 
+        AND userId is not NULL """)
                     
 
 song_table_insert = ("""INSERT INTO songs
     SELECT 
-        song_id,
+        DISTINCT song_id,
         title,
         artist_id,
         year,
@@ -169,7 +172,7 @@ song_table_insert = ("""INSERT INTO songs
 
 artist_table_insert = ("""INSERT INTO artists
     SELECT 
-        artist_id,
+        DISTINCT artist_id,
         artist_name,
         artist_location,
         artist_latitude,
@@ -178,13 +181,17 @@ artist_table_insert = ("""INSERT INTO artists
 
 time_table_insert = ("""INSERT INTO times
     SELECT 
-        e.ts,
-        EXTRACT(hour from e.ts) as hour,
-        EXTRACT(day from e.ts) as day,
-        EXTRACT(week from e.ts) as week,
-        EXTRACT(month from e.ts) as month,
-        EXTRACT(year from e.ts) as year,
-        EXTRACT(weekday from e.ts) as weekday FROM staging_events e """)
+        distinct starttime,
+        EXTRACT(hour from starttime) as hour,
+        EXTRACT(day from starttime) as day,
+        EXTRACT(week from starttime) as week,
+        EXTRACT(month from starttime) as month,
+        EXTRACT(year from starttime) as year,
+        EXTRACT(weekday from starttime) as weekday 
+        FROM   
+            (SELECT TIMESTAMP 'epoch' + e.ts/1000 * interval '1 second' AS starttime
+            FROM staging_events e)
+        """)
                     
 # Analytics tables row count
 
